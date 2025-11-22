@@ -9,12 +9,12 @@ use crate::{
 };
 use cairo_lang_defs::patcher::{PatchBuilder, RewriteNode};
 use cairo_lang_macro::{Diagnostic, Diagnostics};
-use cairo_lang_syntax::node::helpers::{BodyItems, QueryAttrs};
 use cairo_lang_syntax::node::{
     ast::{self, MaybeModuleBody},
     db::SyntaxGroup,
     SyntaxNode, Terminal, TypedSyntaxNode,
 };
+use cairo_lang_syntax::node::{helpers::QueryAttrs, kind::SyntaxKind};
 use indoc::indoc;
 use regex::Regex;
 
@@ -42,14 +42,25 @@ impl<'a> WithComponentsParser<'a> {
 
     /// Parses the module and returns the patched code.
     pub fn parse(&mut self, db: &dyn SyntaxGroup) -> (String, Diagnostics) {
-        let base_node = self.base_node.clone();
+        let base_node = self.base_node;
         let mut builder = PatchBuilder::new_ex(db, &base_node);
 
         let typed = ast::SyntaxFile::from_syntax_node(db, base_node);
         let mut base_rnode = RewriteNode::from_ast(&typed);
-        let module_rnode = base_rnode
-            .modify_child(db, ast::SyntaxFile::INDEX_ITEMS)
-            .modify_child(db, 0);
+        let module_rnode = base_rnode.modify_child(db, ast::SyntaxFile::INDEX_ITEMS);
+
+        // If the module has a header doc, skip it
+        let module_rnode = if let RewriteNode::Copied(copied) = module_rnode {
+            let children = copied.get_children(db);
+            // children can't be empty because attribute macros must have at least one item (compiler enforces this)
+            if children[0].kind(db) == SyntaxKind::ItemHeaderDoc {
+                module_rnode.modify_child(db, 1)
+            } else {
+                module_rnode.modify_child(db, 0)
+            }
+        } else {
+            module_rnode.modify_child(db, 0)
+        };
 
         // Validate the contract module
         let (errors, mut warnings) =
@@ -98,7 +109,7 @@ fn validate_contract_module(
     let mut warnings = vec![];
 
     if let RewriteNode::Copied(copied) = node {
-        let item = ast::ItemModule::from_syntax_node(db, copied.clone());
+        let item = ast::ItemModule::from_syntax_node(db, *copied);
 
         // 1. Check that the module has a body (error)
         let MaybeModuleBody::Some(body) = item.body(db) else {
@@ -112,20 +123,38 @@ fn validate_contract_module(
             return (vec![error], vec![]);
         }
 
-        // 3. Check that the module has the corresponding initializers (warning)
+        // 3. Ensure only one AccessControl component is used (error)
+        let mut accesscontrol_components = vec![];
+        for component in components_info.iter() {
+            match component.kind() {
+                AllowedComponents::AccessControl
+                | AllowedComponents::AccessControlDefaultAdminRules => {
+                    accesscontrol_components.push(component.short_name());
+                }
+                _ => {}
+            }
+        }
+        if accesscontrol_components.len() > 1 {
+            let components_str = accesscontrol_components.join(", ");
+            let error =
+                Diagnostic::error(errors::MULTIPLE_ACCESS_CONTROL_COMPONENTS(&components_str));
+            return (vec![error], vec![]);
+        }
+
+        // 4. Check that the module has the corresponding initializers (warning)
         let components_with_initializer = components_info
             .iter()
             .filter(|c| c.has_initializer)
             .collect::<Vec<&ComponentInfo>>();
 
         if !components_with_initializer.is_empty() {
-            let constructor = body.items_vec(db).into_iter().find(|item| {
+            let constructor = body.items(db).elements(db).find(|item| {
             matches!(item, ast::ModuleItem::FreeFunction(function_ast) if function_ast.has_attr(db, CONSTRUCTOR_ATTRIBUTE))
         });
             let constructor_code = if let Some(constructor) = constructor {
                 // Get the constructor code (maybe we can do this without the builder)
                 let constructor_ast = constructor.as_syntax_node();
-                let typed = ast::ModuleItem::from_syntax_node(db, constructor_ast.clone());
+                let typed = ast::ModuleItem::from_syntax_node(db, constructor_ast);
                 let constructor_rnode = RewriteNode::from_ast(&typed);
                 let mut builder = PatchBuilder::new_ex(db, &constructor_ast);
                 builder.add_modified(constructor_rnode);
@@ -151,11 +180,11 @@ fn validate_contract_module(
             }
         }
 
-        // 4. Check that the contract has the corresponding immutable configs
+        // 5. Check that the contract has the corresponding immutable configs
         for component in components_info.iter().filter(|c| c.has_immutable_config) {
             // Get the body code (maybe we can do this without the builder)
             let body_ast = body.as_syntax_node();
-            let typed = ast::ModuleBody::from_syntax_node(db, body_ast.clone());
+            let typed = ast::ModuleBody::from_syntax_node(db, body_ast);
             let body_rnode = RewriteNode::from_ast(&typed);
 
             let mut builder = PatchBuilder::new_ex(db, &body_ast);
@@ -168,8 +197,7 @@ fn validate_contract_module(
                 .strip_suffix(&component.name)
                 .expect("Component path must end with the component name");
             let re = Regex::new(&format!(
-                r"use {}[{{\w, \n]*DefaultConfig[{{\w}}, \n]*;",
-                component_parent_path
+                r"use {component_parent_path}[{{\w, \n]*DefaultConfig[{{\w}}, \n]*;"
             ))
             .unwrap();
 
@@ -180,7 +208,7 @@ fn validate_contract_module(
                 if !immutable_config_implemented {
                     let warning = Diagnostic::warn(warnings::IMMUTABLE_CONFIG_MISSING(
                         component.short_name(),
-                        &format!("{}DefaultConfig", component_parent_path),
+                        &format!("{component_parent_path}DefaultConfig"),
                     ));
                     warnings.push(warning);
                 }
@@ -229,6 +257,36 @@ fn add_per_component_warnings(code: &str, component_info: &ComponentInfo) -> Vec
             let hooks_empty_impl_used = code.contains("ERC20HooksEmptyImpl");
             if !hooks_trait_used && !hooks_empty_impl_used {
                 let warning = Diagnostic::warn(warnings::ERC20_HOOKS_IMPL_MISSING);
+                warnings.push(warning);
+            }
+        }
+        AllowedComponents::ERC4626 => {
+            // 1. Check that the ERC4626HooksTrait is implemented
+            let hooks_trait_used = code.contains("ERC4626HooksTrait");
+            let hooks_empty_impl_used = code.contains("ERC4626EmptyHooks");
+            if !hooks_trait_used && !hooks_empty_impl_used {
+                let warning = Diagnostic::warn(warnings::ERC4626_HOOKS_IMPL_MISSING);
+                warnings.push(warning);
+            }
+            // 2. Check that the FeeConfigTrait is implemented
+            let fee_config_trait_used = code.contains("FeeConfigTrait");
+            let fee_config_empty_impl_used = code.contains("ERC4626DefaultNoFees");
+            if !fee_config_trait_used && !fee_config_empty_impl_used {
+                let warning = Diagnostic::warn(warnings::ERC4626_FEE_CONFIG_IMPL_MISSING);
+                warnings.push(warning);
+            }
+            // 3. Check that the LimitConfigTrait is implemented
+            let limit_config_trait_used = code.contains("LimitConfigTrait");
+            let limit_config_empty_impl_used = code.contains("ERC4626DefaultNoLimits");
+            if !limit_config_trait_used && !limit_config_empty_impl_used {
+                let warning = Diagnostic::warn(warnings::ERC4626_LIMIT_CONFIG_IMPL_MISSING);
+                warnings.push(warning);
+            }
+            // 4. Check that the AssetsManagementTrait is implemented
+            let assets_management_trait_used = code.contains("AssetsManagementTrait");
+            let self_assets_management_impl_used = code.contains("ERC4626SelfAssetsManagement");
+            if !assets_management_trait_used && !self_assets_management_impl_used {
+                let warning = Diagnostic::warn(warnings::ERC4626_ASSETS_MANAGEMENT_IMPL_MISSING);
                 warnings.push(warning);
             }
         }
@@ -283,7 +341,7 @@ fn process_module_items(
 
     for item_rnode in items_mnode.children.as_mut().unwrap() {
         if let RewriteNode::Copied(copied) = item_rnode {
-            let item = ast::ModuleItem::from_syntax_node(db, copied.clone());
+            let item = ast::ModuleItem::from_syntax_node(db, *copied);
 
             match item {
                 ast::ModuleItem::Struct(item_struct)

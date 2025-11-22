@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// OpenZeppelin Contracts for Cairo v2.0.0-alpha.0 (account/src/account.cairo)
+// OpenZeppelin Contracts for Cairo v3.0.0-alpha.3 (account/src/account.cairo)
 
 /// # Account Component
 ///
@@ -9,14 +9,15 @@ pub mod AccountComponent {
     use core::hash::{HashStateExTrait, HashStateTrait};
     use core::num::traits::Zero;
     use core::poseidon::PoseidonTrait;
+    use openzeppelin_interfaces::accounts as interface;
     use openzeppelin_introspection::src5::SRC5Component;
     use openzeppelin_introspection::src5::SRC5Component::{
         InternalTrait as SRC5InternalTrait, SRC5Impl,
     };
+    use openzeppelin_utils::execution::execute_single_call;
     use starknet::account::Call;
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
-    use crate::interface;
-    use crate::utils::{execute_single_call, is_tx_version_valid, is_valid_stark_signature};
+    use crate::utils::{is_tx_version_valid, is_valid_stark_signature};
 
     #[storage]
     pub struct Storage {

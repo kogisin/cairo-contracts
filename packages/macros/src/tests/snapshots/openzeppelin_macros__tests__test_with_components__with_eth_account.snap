@@ -7,14 +7,12 @@ TokenStream:
 
 #[starknet::contract(account)]
 pub mod MyContract {
-    use openzeppelin_account::interface::EthPublicKey;
-
+    use openzeppelin_interfaces::accounts::EthPublicKey;
     #[storage]
     pub struct Storage {
         #[substorage(v0)]
         pub eth_account: EthAccountComponent::Storage,
     }
-
     #[constructor]
     fn constructor(ref self: ContractState, public_key: EthPublicKey) {
         self.eth_account.initializer(public_key);

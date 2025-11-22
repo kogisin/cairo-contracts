@@ -1,11 +1,12 @@
 use core::num::traits::Zero;
 use openzeppelin_account::eth_account::EthAccountComponent::EthAccountMixinImpl;
 use openzeppelin_account::extensions::SRC9Component::{OutsideExecutionV2Impl, SNIP12MetadataImpl};
-use openzeppelin_account::extensions::src9::interface::{ISRC9_V2_ID, OutsideExecution};
 use openzeppelin_account::extensions::src9::snip12_utils::OutsideExecutionStructHash;
-use openzeppelin_account::interface::ISRC6_ID;
 use openzeppelin_account::utils::secp256_point::{DebugSecp256Point, Secp256PointPartialEq};
-use openzeppelin_introspection::interface::ISRC5_ID;
+use openzeppelin_interfaces::accounts::ISRC6_ID;
+use openzeppelin_interfaces::erc20::IERC20DispatcherTrait;
+use openzeppelin_interfaces::introspection::ISRC5_ID;
+use openzeppelin_interfaces::src9::{ISRC9_V2_ID, OutsideExecution};
 use openzeppelin_test_common::erc20::deploy_erc20;
 use openzeppelin_test_common::eth_account::{
     EthAccountSpyHelpers, SIGNED_TX_DATA, SignedTransactionData, get_accept_ownership_signature,
@@ -19,7 +20,6 @@ use openzeppelin_testing::constants::{
 };
 use openzeppelin_testing::signing::{Secp256k1KeyPair, SerializedSigning};
 use openzeppelin_testing::spy_events;
-use openzeppelin_token::erc20::interface::IERC20DispatcherTrait;
 use openzeppelin_utils::cryptography::snip12::OffchainMessageHash;
 use openzeppelin_utils::serde::SerializedAppend;
 use snforge_std::{
@@ -32,9 +32,6 @@ use starknet::secp256_trait::Secp256Trait;
 use starknet::secp256k1::Secp256k1Point;
 use starknet::{ClassHash, ContractAddress, SyscallResultTrait};
 use crate::EthAccountUpgradeable;
-use crate::interfaces::eth_account::{
-    EthAccountUpgradeableABISafeDispatcher, EthAccountUpgradeableABISafeDispatcherTrait,
-};
 use crate::interfaces::{
     EthAccountUpgradeableABIDispatcher, EthAccountUpgradeableABIDispatcherTrait,
 };
@@ -472,7 +469,7 @@ fn test_upgraded_event() {
 }
 
 #[test]
-#[feature("safe_dispatcher")]
+#[should_panic(expected: 'ENTRYPOINT_NOT_FOUND')]
 fn test_v2_missing_camel_selector() {
     let (_, v1) = setup_dispatcher(KEY_PAIR());
     let contract_address = v1.contract_address;
@@ -481,10 +478,8 @@ fn test_v2_missing_camel_selector() {
     start_cheat_caller_address(contract_address, contract_address);
     v1.upgrade(v2_class_hash);
 
-    let safe_dispatcher = EthAccountUpgradeableABISafeDispatcher { contract_address };
-    let result = safe_dispatcher.getPublicKey();
-
-    utils::assert_entrypoint_not_found_error(result, selector!("getPublicKey"), contract_address)
+    let dispatcher = EthAccountUpgradeableABIDispatcher { contract_address };
+    dispatcher.getPublicKey();
 }
 
 #[test]

@@ -1,14 +1,16 @@
 use cairo_lang_formatter::format_string;
-use cairo_lang_macro::{attribute_macro, Diagnostic, Diagnostics, ProcMacroResult, TokenStream};
+use cairo_lang_macro::{attribute_macro, quote, Diagnostic, ProcMacroResult, TokenStream};
 use cairo_lang_parser::utils::SimpleParserDatabase;
 use cairo_lang_plugins::plugins::utils::PluginTypeInfo;
 use cairo_lang_starknet_classes::keccak::starknet_keccak;
+use cairo_lang_syntax::node::with_db::SyntaxNodeWithDb;
 use cairo_lang_syntax::node::{ast, TypedSyntaxNode};
 use cairo_lang_syntax::node::{db::SyntaxGroup, SyntaxNode};
 use convert_case::{Case, Casing};
 use indoc::formatdoc;
 use regex::Regex;
 
+use crate::attribute::common::text_span::merge_spans_from_initial;
 use crate::type_hash::parser::TypeHashParser;
 
 use super::diagnostics::errors;
@@ -28,33 +30,47 @@ use super::parser::parse_string_arg;
 /// ```
 #[attribute_macro]
 pub fn type_hash(attr_stream: TokenStream, item_stream: TokenStream) -> ProcMacroResult {
+    let no_op_result = ProcMacroResult::new(item_stream.clone());
+
     // 1. Parse the attribute stream
     let config = match parse_args(&attr_stream.to_string()) {
         Ok(config) => config,
         Err(err) => {
-            return ProcMacroResult::new(TokenStream::empty()).with_diagnostics(err.into());
+            return no_op_result.with_diagnostics(err.into());
         }
     };
 
     // 2. Parse the item stream
     let db = SimpleParserDatabase::default();
-    let content = match db.parse_virtual(item_stream.to_string()) {
+    let formatted_item_stream = format_string(&db, item_stream.to_string());
+    let content = match db.parse_virtual(formatted_item_stream) {
         Ok(node) => handle_node(&db, node, &config),
         Err(err) => {
             let error = Diagnostic::error(err.format(&db));
-            return ProcMacroResult::new(TokenStream::empty()).with_diagnostics(error.into());
+            return no_op_result.with_diagnostics(error.into());
         }
     };
 
-    // 3. Format the expanded content
-    let (formatted_content, diagnostics) = match content {
-        Ok(content) => (format_string(&db, content), Diagnostics::new(vec![])),
-        Err(err) => (String::new(), err.into()),
+    let generated = match content {
+        Ok(generated) => generated,
+        Err(err) => {
+            return no_op_result.with_diagnostics(err.into());
+        }
     };
 
-    // 4. Return the result
-    let result = TokenStream::new(item_stream.to_string() + &formatted_content);
-    ProcMacroResult::new(result).with_diagnostics(diagnostics)
+    // 3. Merge spans from the item stream into the content
+    // TODO!: This should be refactored when scarb APIs get improved
+    let syntax_node = db.parse_virtual(generated).unwrap();
+    let content_node = SyntaxNodeWithDb::new(&syntax_node, &db);
+
+    let mut result = item_stream.clone();
+    result.extend(quote! {#content_node});
+
+    let syntax_node_with_spans =
+        merge_spans_from_initial(&item_stream.tokens, &result.to_string(), &db);
+    let token_stream =
+        TokenStream::new(syntax_node_with_spans).with_metadata(item_stream.metadata().clone());
+    ProcMacroResult::new(token_stream)
 }
 
 /// This attribute macro is used to specify an override for the SNIP-12 type.
@@ -115,8 +131,7 @@ fn parse_args(s: &str) -> Result<TypeHashArgs, Diagnostic> {
     let allowed_args_re = allowed_args.join("|");
 
     let re = Regex::new(&format!(
-        r#"^\(({}): ([\w"' ])+(?:, ({}): ([\w"' ])+)*\)$"#,
-        allowed_args_re, allowed_args_re
+        r#"^\(({allowed_args_re}):\s?([\w"' ])+(?:,\s?({allowed_args_re}):\s?([\w"' ])+)*\)$"#
     ))
     .unwrap();
 
@@ -131,7 +146,7 @@ fn parse_args(s: &str) -> Result<TypeHashArgs, Diagnostic> {
                 "name" => args.name = parse_string_arg(value)?,
                 "debug" => args.debug = value == "true",
                 // This should be unreachable as long as the regex is correct
-                _ => panic!("Invalid argument: {}", name),
+                _ => panic!("Invalid argument: {name}"),
             }
         }
         Ok(args)
@@ -148,9 +163,9 @@ fn handle_node(
     args: &TypeHashArgs,
 ) -> Result<String, Diagnostic> {
     let typed = ast::SyntaxFile::from_syntax_node(db, node);
-    let items = typed.items(db).elements(db);
+    let mut items = typed.items(db).elements(db);
 
-    let Some(item_ast) = items.first() else {
+    let Some(item_ast) = items.next() else {
         let error = Diagnostic::error(errors::EMPTY_TYPE_FOUND);
         return Err(error);
     };
@@ -159,7 +174,7 @@ fn handle_node(
     match item_ast {
         ast::ModuleItem::Struct(_) | ast::ModuleItem::Enum(_) => {
             // It is safe to unwrap here because we know the item is a struct
-            let plugin_type_info = PluginTypeInfo::new(db, item_ast).unwrap();
+            let plugin_type_info = PluginTypeInfo::new(db, &item_ast).unwrap();
             generate_code(db, &plugin_type_info, args)
         }
         _ => {

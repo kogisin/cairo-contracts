@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// OpenZeppelin Contracts for Cairo v2.0.0-alpha.0 (token/src/common/erc2981/erc2981.cairo)
+// OpenZeppelin Contracts for Cairo v3.0.0-alpha.3 (token/src/common/erc2981/erc2981.cairo)
 
 /// # ERC2981 Component
 ///
@@ -22,8 +22,12 @@ pub mod ERC2981Component {
     use core::num::traits::Zero;
     use openzeppelin_access::accesscontrol::AccessControlComponent;
     use openzeppelin_access::accesscontrol::AccessControlComponent::InternalTrait as AccessControlInternalTrait;
+    use openzeppelin_access::accesscontrol::extensions::AccessControlDefaultAdminRulesComponent;
+    use openzeppelin_access::accesscontrol::extensions::AccessControlDefaultAdminRulesComponent::InternalTrait as AccessControlDefaultAdminRulesInternalTrait;
     use openzeppelin_access::ownable::OwnableComponent;
     use openzeppelin_access::ownable::OwnableComponent::InternalTrait as OwnableInternalTrait;
+    use openzeppelin_interfaces::erc2981 as interface;
+    use openzeppelin_interfaces::erc2981::IERC2981_ID;
     use openzeppelin_introspection::src5::SRC5Component;
     use openzeppelin_introspection::src5::SRC5Component::{
         InternalTrait as SRC5InternalTrait, SRC5Impl,
@@ -33,8 +37,6 @@ pub mod ERC2981Component {
         Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
         StoragePointerWriteAccess,
     };
-    use crate::common::erc2981::interface;
-    use crate::common::erc2981::interface::IERC2981_ID;
 
     /// Role for the admin responsible for managing royalty settings.
     pub const ROYALTY_ADMIN_ROLE: felt252 = selector!("ROYALTY_ADMIN_ROLE");
@@ -62,7 +64,7 @@ pub mod ERC2981Component {
     }
 
     /// Constants expected to be defined at the contract level used to configure the component
-    /// behaviour.
+    /// behavior.
     ///
     /// - `FEE_DENOMINATOR`: The denominator with which to interpret the fee set in
     ///   `_set_token_royalty` and `_set_default_royalty` as a fraction of the sale price.
@@ -284,6 +286,77 @@ pub mod ERC2981Component {
         /// - The caller must have `ROYALTY_ADMIN_ROLE` role.
         fn reset_token_royalty(ref self: ComponentState<TContractState>, token_id: u256) {
             get_dep_component!(@self, AccessControl).assert_only_role(ROYALTY_ADMIN_ROLE);
+            self._reset_token_royalty(token_id)
+        }
+    }
+
+    //
+    // AccessControlDefaultAdminRules-based implementation of IERC2981Admin
+    //
+
+    #[embeddable_as(ERC2981AdminAccessControlDefaultAdminRulesImpl)]
+    impl ERC2981AdminAccessControlDefaultAdminRules<
+        TContractState,
+        +HasComponent<TContractState>,
+        +ImmutableConfig,
+        +AccessControlDefaultAdminRulesComponent::ImmutableConfig,
+        +SRC5Component::HasComponent<TContractState>,
+        impl AccessControlDAR: AccessControlDefaultAdminRulesComponent::HasComponent<
+            TContractState,
+        >,
+        +Drop<TContractState>,
+    > of interface::IERC2981Admin<ComponentState<TContractState>> {
+        /// Sets the royalty information that all ids in this contract will default to.
+        ///
+        /// Requirements:
+        ///
+        /// - The caller must have `ROYALTY_ADMIN_ROLE` role.
+        /// - `receiver` cannot be the zero address.
+        /// - `fee_numerator` cannot be greater than the fee denominator.
+        fn set_default_royalty(
+            ref self: ComponentState<TContractState>,
+            receiver: ContractAddress,
+            fee_numerator: u128,
+        ) {
+            get_dep_component!(@self, AccessControlDAR).assert_only_role(ROYALTY_ADMIN_ROLE);
+            self._set_default_royalty(receiver, fee_numerator)
+        }
+
+        /// Sets the default royalty percentage and receiver to zero.
+        ///
+        /// Requirements:
+        ///
+        /// - The caller must have `ROYALTY_ADMIN_ROLE` role.
+        fn delete_default_royalty(ref self: ComponentState<TContractState>) {
+            get_dep_component!(@self, AccessControlDAR).assert_only_role(ROYALTY_ADMIN_ROLE);
+            self._delete_default_royalty()
+        }
+
+        /// Sets the royalty information for a specific token id that takes precedence over the
+        /// global default.
+        ///
+        /// Requirements:
+        ///
+        /// - The caller must have `ROYALTY_ADMIN_ROLE` role.
+        /// - `receiver` cannot be the zero address.
+        /// - `fee_numerator` cannot be greater than the fee denominator.
+        fn set_token_royalty(
+            ref self: ComponentState<TContractState>,
+            token_id: u256,
+            receiver: ContractAddress,
+            fee_numerator: u128,
+        ) {
+            get_dep_component!(@self, AccessControlDAR).assert_only_role(ROYALTY_ADMIN_ROLE);
+            self._set_token_royalty(token_id, receiver, fee_numerator)
+        }
+
+        /// Resets royalty information for the token id back to unset.
+        ///
+        /// Requirements:
+        ///
+        /// - The caller must have `ROYALTY_ADMIN_ROLE` role.
+        fn reset_token_royalty(ref self: ComponentState<TContractState>, token_id: u256) {
+            get_dep_component!(@self, AccessControlDAR).assert_only_role(ROYALTY_ADMIN_ROLE);
             self._reset_token_royalty(token_id)
         }
     }

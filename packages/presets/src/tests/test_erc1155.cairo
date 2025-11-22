@@ -1,4 +1,9 @@
 use core::num::traits::Zero;
+use openzeppelin_interfaces::erc1155 as interface;
+use openzeppelin_interfaces::erc1155::{
+    IERC1155CamelDispatcher, IERC1155CamelDispatcherTrait, IERC1155Dispatcher,
+    IERC1155DispatcherTrait,
+};
 use openzeppelin_test_common::erc1155::{
     ERC1155SpyHelpers, deploy_another_account_at, get_ids_and_split_values, get_ids_and_values,
     setup_account, setup_receiver, setup_src5,
@@ -11,11 +16,6 @@ use openzeppelin_testing::constants::{
     TOKEN_VALUE, TOKEN_VALUE_2, ZERO,
 };
 use openzeppelin_testing::{EventSpyExt, EventSpyQueue as EventSpy, spy_events};
-use openzeppelin_token::erc1155;
-use openzeppelin_token::erc1155::interface::{
-    IERC1155CamelSafeDispatcher, IERC1155CamelSafeDispatcherTrait, IERC1155Dispatcher,
-    IERC1155DispatcherTrait,
-};
 use openzeppelin_utils::serde::SerializedAppend;
 use snforge_std::start_cheat_caller_address;
 use starknet::{ClassHash, ContractAddress};
@@ -67,15 +67,15 @@ fn test_constructor() {
     assert_eq!(dispatcher.balance_of(owner, TOKEN_ID), TOKEN_VALUE);
     assert_eq!(dispatcher.balance_of(owner, TOKEN_ID_2), TOKEN_VALUE_2);
 
-    let supports_ierc1155 = dispatcher.supports_interface(erc1155::interface::IERC1155_ID);
+    let supports_ierc1155 = dispatcher.supports_interface(interface::IERC1155_ID);
     assert!(supports_ierc1155);
 
     let supports_ierc1155_metadata_uri = dispatcher
-        .supports_interface(erc1155::interface::IERC1155_METADATA_URI_ID);
+        .supports_interface(interface::IERC1155_METADATA_URI_ID);
     assert!(supports_ierc1155_metadata_uri);
 
     let supports_isrc5 = dispatcher
-        .supports_interface(openzeppelin_introspection::interface::ISRC5_ID);
+        .supports_interface(openzeppelin_interfaces::introspection::ISRC5_ID);
     assert!(supports_isrc5);
 }
 
@@ -762,7 +762,7 @@ fn test_upgraded_event() {
 }
 
 #[test]
-#[feature("safe_dispatcher")]
+#[should_panic(expected: 'ENTRYPOINT_NOT_FOUND')]
 fn test_v2_missing_camel_selector() {
     let (_, v1, owner) = setup_dispatcher();
     let v2_class_hash = V2_CLASS_HASH();
@@ -770,10 +770,8 @@ fn test_v2_missing_camel_selector() {
     start_cheat_caller_address(v1.contract_address, owner);
     v1.upgrade(v2_class_hash);
 
-    let safe_dispatcher = IERC1155CamelSafeDispatcher { contract_address: v1.contract_address };
-    let result = safe_dispatcher.balanceOf(owner, TOKEN_ID);
-
-    utils::assert_entrypoint_not_found_error(result, selector!("balanceOf"), v1.contract_address)
+    let dispatcher = IERC1155CamelDispatcher { contract_address: v1.contract_address };
+    dispatcher.balanceOf(owner, TOKEN_ID);
 }
 
 #[test]
